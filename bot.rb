@@ -1,45 +1,54 @@
 #!/usr/bin/env ruby
-
 require 'rubygems'
 require 'bundler/setup'
 require 'telegram/bot'
-require 'logger'
 require 'hashie'
-require 'google-search'
-require 'open-uri'
-require 'json'
 
 $log = Logger.new STDOUT
 $log.datetime_format = "%Y-%m-%d %H:%M:%S"
 
 require_relative 'config'
 
-def get_results message
-  regexp = /^https?:\/\/xkcd\.com\/(\d+)\/$/
-  info = []
+SOMETHING_WENT_WRONG = Telegram::Bot::Types::InlineQueryResultArticle.new(
+  id: -1,
+  title: "Error",
+  description: "Something went wrong!",
+  input_message_content: Telegram::Bot::Types::InputTextMessageContent.new(
+    message_text: "`Robert'); DROP TABLE Students;--`",
+    parse_mode: "Markdown"
+  )
+).freeze
 
-  Google::Search::Web.new(query: "site:xkcd.com #{message.query}").each do |res|
-    next unless res.uri =~ regexp
-    id = $1.to_i
-    item = Hashie::Mash.new JSON.load(open("http://xkcd.com/#{id}/info.0.json")).merge url: res.uri
-    info << item
-    break if info.length >= 3
-  end
+def get_results message
+  results = Hashie::Mash.new(
+    JSON.parse(
+        Faraday.post("https://relevant-xkcd-backend.herokuapp.com/search", {search: message.query})
+               .body
+    )
+  ).results
 
   $log.debug do
     "Got data for #{message.query}:" +
-      (info.map {|item| [item.num, item.title]}).inspect
+      (results.map {|item| [item.number, item.title]}).inspect
   end
 
-  info.map do |item|
-    Telegram::Bot::Types::InlineQueryResultArticle.new id: item.num,
-                                                       title: item.title,
-                                                       message_text: item.url,
-                                                       thumb_url: item.img
+  results.map do |item|
+    Telegram::Bot::Types::InlineQueryResultArticle.new(
+      id: item.number,
+      title: item.title,
+      input_message_content: Telegram::Bot::Types::InputTextMessageContent.new(
+        message_text: "https://#{item.url}"
+      ),
+      url: "https://#{item.url}",
+      thumb_url: item.image
+    )
   end
+rescue => e
+  $log.error "Something went wrong while getting results: #{e}"
+  [SOMETHING_WENT_WRONG]
 end
 
-Telegram::Bot::Client.run(TOKEN) do |bot|
+Telegram::Bot::Client.run(TOKEN, logger: $log) do |bot|
   begin
     bot.listen do |message|
       $log.debug "Got message: #{message.id if message.respond_to? :id}: #{message} (#{message.class})"
